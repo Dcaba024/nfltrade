@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/* Sleeper-style dark neon design tokens. Dark mode only. */
+:root {
+  --bg: #0a0e14;
+  --surface: #141a24;
+  --surface-2: #1c2530;
+  --border: #263243;
+  --text: #e6edf3;
+  /* Lightened from the original #7d8ba1 -- that value fell just under 4.5:1
+     against --surface-2 (~4.48:1). This shade clears 4.5:1 against bg,
+     surface, and surface-2 with margin (WCAG 2.1 AA). */
+  --text-dim: #93a0b8;
+  --neon-green: #00f5a0;
+  --neon-cyan: #22e0ff;
+  --neon-pink: #ff3d8b;
+  --neon-purple: #b57bff;
+  --neon-amber: #ffb020;
+}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-neon-green: var(--neon-green);
+  --color-neon-cyan: var(--neon-cyan);
+  --color-neon-pink: var(--neon-pink);
+  --color-neon-purple: var(--neon-purple);
+  --color-neon-amber: var(--neon-amber);
+}
+
+html,
+body {
+  background-color: var(--bg);
+  color-scheme: dark;
+}
+
+/* Visible keyboard focus indicator on every interactive element. Outline
+   (not box-shadow) so it never depends on / is cancelled by a component's
+   own color styling. */
+:focus-visible {
+  outline: 2px solid var(--neon-green);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respect prefers-reduced-motion: collapse animations/transitions to their
+   end state instantly instead of disabling them outright, so spinners,
+   meter fills, and glow transitions still land on a correct static result. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Reusable glow utilities -- applied sparingly to key elements only
+   (CTA button, winning column/card, active/focus states). */
+@utility glow-green {
+  box-shadow: 0 0 14px rgba(0, 245, 160, 0.45);
+}
+@utility glow-cyan {
+  box-shadow: 0 0 14px rgba(34, 224, 255, 0.45);
+}
+@utility glow-pink {
+  box-shadow: 0 0 14px rgba(255, 61, 139, 0.45);
+}
+@utility text-glow-green {
+  text-shadow: 0 0 10px rgba(0, 245, 160, 0.6);
+}
+@utility text-glow-cyan {
+  text-shadow: 0 0 10px rgba(34, 224, 255, 0.6);
+}
