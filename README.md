@@ -179,5 +179,52 @@ known limitation, not a real identity system.
   `python-dotenv`) and never appears in any frontend file or API response.
 - `.env` files are gitignored; `.env.example` files document the required
   variables with no values.
-- CORS is scoped to the `/api/*` routes to let the Vite dev server reach
-  Flask locally.
+- CORS is scoped to the `/api/*` routes; `FRONTEND_ORIGIN` restricts it to
+  the deployed frontend's origin in production (defaults to `*` for local
+  dev, where the Vite dev server needs to reach Flask with no extra config).
+
+## Deployment
+
+This is a two-service app (Flask backend + static frontend) plus Postgres —
+it fits a traditional persistent-host platform (Railway, Render, Fly.io, a
+VPS) better than a serverless-first one, since the backend keeps a
+connection pool and an in-process rate limiter that both assume one
+long-running process. Steps below are for Railway; Render's flow is nearly
+identical (Web Service + Static Site + a managed Postgres instance) using
+the same `backend/Procfile` and `frontend` build/start commands.
+
+1. **Push to GitHub.** Create a repo on github.com, then:
+   ```bash
+   git remote add origin https://github.com/<you>/<repo>.git
+   git branch -M main
+   git push -u origin main
+   ```
+2. **Add Postgres.** In a new Railway project: "New" → "Database" →
+   "PostgreSQL". Railway exposes its connection string as
+   `${{Postgres.DATABASE_URL}}` for other services in the project to
+   reference.
+3. **Backend service.** "New" → "GitHub Repo" → this repo.
+   - Root directory: `backend`
+   - Railway auto-detects Python + `requirements.txt`; the start command
+     comes from `backend/Procfile` (gunicorn, 2 workers, 90s timeout to
+     cover slower web-search evaluations).
+   - Variables: `OPENAI_API_KEY` (your key), `DATABASE_URL` (reference the
+     Postgres service above), optionally `OPENAI_MODEL` /
+     `FREE_EVALS_PER_USER_PER_DAY` / `EVAL_RATE_LIMIT` to override defaults.
+   - Settings → Networking → Generate Domain. Note the resulting URL.
+4. **Frontend service.** "New" → "GitHub Repo" → same repo, as a second
+   service in the same project.
+   - Root directory: `frontend`
+   - Build command: `npm run build`
+   - Start command: `npm run start` (serves the built `dist/` via `serve`,
+     reading Railway's injected `$PORT`)
+   - Variables: `VITE_API_BASE_URL` = the backend URL from step 3.
+   - Generate a domain for this service too.
+5. **Lock down CORS.** Back on the backend service, set `FRONTEND_ORIGIN` to
+   the frontend's URL from step 4 and redeploy, so `/api/*` only accepts
+   requests from your deployed frontend (not `*`).
+6. **Verify.** Open the frontend URL — search, leaderboards, and Evaluate
+   trade should all work against the deployed backend and Postgres.
+
+Postgres schema tables are created automatically on first `/api/evaluate`
+call (`app/db.py`'s `ensure_schema()`), no migration step needed.
