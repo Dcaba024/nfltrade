@@ -92,7 +92,7 @@ bring the leaderboards back.
 | `OPENAI_MODEL`     | `backend/.env`   | Optional. Defaults to `gpt-5.6-luna` (cheaper tier; see `backend/app/config.py`). |
 | `OPENAI_REASONING_EFFORT` | `backend/.env` | Optional. Defaults to `low`.                                      |
 | `OPENAI_MAX_TOOL_CALLS` | `backend/.env` | Optional. Caps web-search calls per evaluation; defaults to `1`.     |
-| `FREE_EVALS_PER_USER_PER_DAY` | `backend/.env` | Optional. Daily quota per IP on the server key; defaults to `10`. |
+| `FREE_EVALS_PER_USER_PER_DAY` | `backend/.env` | Optional. Daily quota per IP on the server key; defaults to `25`. |
 | `EVAL_RATE_LIMIT`  | `backend/.env`   | Optional. Per-IP burst limit on `/api/evaluate`; defaults to `10 per minute`. |
 | `NFL_SEASON`       | `backend/.env`   | Optional override if the auto-detected season is wrong.                 |
 | `NFL_WEEK`         | `backend/.env`   | Optional override if the auto-detected week is wrong.                   |

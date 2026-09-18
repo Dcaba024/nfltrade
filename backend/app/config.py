@@ -13,7 +13,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "low")
 OPENAI_MAX_TOOL_CALLS = int(os.environ.get("OPENAI_MAX_TOOL_CALLS", "1"))
-FREE_EVALS_PER_USER_PER_DAY = int(os.environ.get("FREE_EVALS_PER_USER_PER_DAY", "10"))
+FREE_EVALS_PER_USER_PER_DAY = int(os.environ.get("FREE_EVALS_PER_USER_PER_DAY", "25"))
 INJURED_STATUSES = {"Questionable", "Doubtful", "Out", "IR", "PUP"}
 EVAL_RATE_LIMIT = os.environ.get("EVAL_RATE_LIMIT", "10 per minute")
 
