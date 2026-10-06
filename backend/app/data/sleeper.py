@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -16,6 +17,17 @@ SCORING_STAT_KEY = {
     "half": "pts_half_ppr",
     "standard": "pts_std",
 }
+
+
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, punctuation-free, suffix-free: "Kenneth Walker III" ->
+    "kenneth walker", "J. Jefferson" -> "j jefferson", "D/ST" -> "dst"."""
+    cleaned = re.sub(r"[^a-z0-9\s]", "", name.lower().replace("-", " "))
+    tokens = [t for t in cleaned.split() if t not in _NAME_SUFFIXES]
+    return " ".join(tokens)
 
 
 class SleeperProvider:
@@ -252,6 +264,82 @@ class SleeperProvider:
                 continue
             results.append(self._build_player_data(player_id, meta, projections_by_id, scoring))
         return results
+
+    def match_player(
+        self,
+        name: str,
+        position: Optional[str] = None,
+        team: Optional[str] = None,
+        scoring: str = "ppr",
+        season: Optional[int] = None,
+        week: Optional[int] = None,
+    ) -> Optional[PlayerData]:
+        """Resolves a loosely-written name (as read off a roster screenshot --
+        "J. Jefferson", "Kenneth Walker III", "Eagles D/ST") to a Sleeper
+        player. Position/team narrow ambiguous matches; among what's left,
+        rostered players with the highest projection win. Returns None rather
+        than guessing when nothing plausible matches.
+        """
+        season = season or config.CURRENT_SEASON
+        week = week or config.CURRENT_WEEK
+        players = self._load_players()
+        projections_by_id = self._load_projections(season, week)
+
+        target = _normalize_name(name)
+        if not target:
+            return None
+        tokens = target.split()
+        team = (team or "").upper() or None
+        position = (position or "").upper() or None
+        if position in ("DST", "D/ST", "D"):
+            position = "DEF"
+
+        candidates = []
+        for player_id, meta in players.items():
+            if not meta:
+                continue
+            pos = meta.get("position") or ""
+            if pos not in ("QB", "RB", "WR", "TE", "K", "DEF"):
+                continue
+            if position and pos != position:
+                continue
+
+            if pos == "DEF":
+                # DEF entries: player_id is the team abbreviation, first/last
+                # are city/nickname ("Philadelphia"/"Eagles").
+                names = {
+                    _normalize_name(meta.get("first_name") or ""),
+                    _normalize_name(meta.get("last_name") or ""),
+                    player_id.lower(),
+                }
+                if not any(n and n in tokens for n in names) and target not in names:
+                    continue
+            else:
+                first = _normalize_name(meta.get("first_name") or "")
+                last = _normalize_name(meta.get("last_name") or "")
+                if not last:
+                    continue
+                full = f"{first} {last}".strip()
+                if target != full:
+                    # Abbreviated first name: "j jefferson" / "j jefferson jr".
+                    if not (len(tokens) >= 2 and len(tokens[0]) == 1 and first.startswith(tokens[0])
+                            and " ".join(tokens[1:]) == last):
+                        continue
+
+            if team and meta.get("team") and meta.get("team") != team:
+                continue
+            candidates.append((player_id, meta))
+
+        if not candidates:
+            return None
+
+        def rank(item):
+            player_id, meta = item
+            pts = (projections_by_id.get(player_id, {}).get("stats") or {}).get("pts_ppr", 0) or 0
+            return (0 if meta.get("team") else 1, -pts)
+
+        player_id, meta = min(candidates, key=rank)
+        return self._build_player_data(player_id, meta, projections_by_id, scoring)
 
     # -- season stats / leaderboard -----------------------------------------
 

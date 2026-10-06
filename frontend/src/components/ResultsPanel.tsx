@@ -4,6 +4,7 @@ import { PlayerHeadshot } from "./PlayerHeadshot";
 import { PositionBadge } from "./PositionBadge";
 import { FairnessMeter } from "./FairnessMeter";
 import { FairnessGradePill } from "./FairnessGradePill";
+import { TradeBreakdown } from "./TradeBreakdown";
 
 interface ResultsPanelProps {
   result: EvaluateResponse;
@@ -161,10 +162,7 @@ export function ResultsPanel({ result, teamA, teamB }: ResultsPanelProps) {
         })}
       </div>
 
-      <div className="rounded-xl border border-border bg-surface p-5">
-        <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-text-dim">Rationale</h3>
-        <p className="whitespace-pre-line text-sm text-text">{result.rationale}</p>
-      </div>
+      <TradeBreakdown result={result} teamA={teamA} teamB={teamB} />
     </div>
   );
 }

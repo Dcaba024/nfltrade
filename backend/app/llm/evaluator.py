@@ -54,10 +54,13 @@ Rules:
 - fairnessScore (0-100, 100=perfectly even) starts from the raw % gap between the two receives-totals, then adjust for positional scarcity, consolidation (N-for-1 favors the side getting the single best player), injury risk, and bye-week conflicts. If it diverges from the raw gap, say why in fairnessRationale.
 - Grade: 90-100 Even, 75-89 Fair, 55-74 Slight Edge, 30-54 Lopsided, 0-29 Unfair.
 - rationale, adjustmentReason, fairnessRationale: max 1-2 sentences each.
+- outlook: 1-2 sentences on what the player offers a roster -- role, usage/volume, ceiling vs floor, and rest-of-season value beyond this week.
+- decisionBreakdown: 2-4 short bullet strings, each one concrete factor that drove the verdict (e.g. best player in the deal, depth vs. consolidation, injury risk, positional need). Cover all players, including alreadyEvaluated.
+- myRoster (optional): the user's full current roster and which side (A|B) of the trade is theirs. If present, judge the trade for THAT roster after the swap -- positional depth/holes, starting-lineup upgrade vs. bench filler, bye-week stacking, redundancy. A trade can lose on raw points yet help the roster (fills a hole), or win on points yet hurt it (they give up a needed starter). rosterFit.recommendation: "accept" | "decline" | "consider"; summary 1-2 sentences addressed to the user ("you"); reasons 2-3 short strings. No myRoster -> "rosterFit": null.
 - "players": one entry per toEvaluate player (from either bucket), NONE for alreadyEvaluated players. Empty toEvaluate -> "players": [].
 - Output ONLY this JSON. No markdown fences, no other text.
 
-{"winner":"A|B|even","confidence":0-1,"marginDescription":"","players":[{"name":"","projFantasyPts":0,"adjFantasyPts":0,"adjustmentReason":"","riskFlags":[""]}],"rationale":"","fairnessScore":0-100,"fairnessGrade":"Even|Fair|Slight Edge|Lopsided|Unfair","fairnessRationale":""}"""
+{"winner":"A|B|even","confidence":0-1,"marginDescription":"","players":[{"name":"","projFantasyPts":0,"adjFantasyPts":0,"adjustmentReason":"","riskFlags":[""],"outlook":""}],"rationale":"","decisionBreakdown":[""],"fairnessScore":0-100,"fairnessGrade":"Even|Fair|Slight Edge|Lopsided|Unfair","fairnessRationale":"","rosterFit":{"recommendation":"accept|decline|consider","summary":"","reasons":[""]}}"""
 
 
 def _format_new_entry(player: PlayerData) -> dict:
@@ -90,6 +93,7 @@ def _build_user_prompt(
     team_a_context: list[dict],
     team_b_context: list[dict],
     scoring: str,
+    my_roster: Optional[dict] = None,
 ) -> str:
     # team_a_new/team_a_context are players Team A GIVES UP -- so they land
     # in teamB_receives, and vice versa. Pre-swapping here (rather than
@@ -109,6 +113,21 @@ def _build_user_prompt(
         payload["alreadyEvaluated"] = {
             "teamA_receives": [_format_context_entry(c) for c in team_b_context],
             "teamB_receives": [_format_context_entry(c) for c in team_a_context],
+        }
+    if my_roster:
+        payload["myRoster"] = {
+            "side": my_roster["side"],
+            "players": [
+                {
+                    "name": p.name,
+                    "position": p.position,
+                    "team": p.team,
+                    "slot": slot,
+                    "injuryStatus": p.injuryStatus,
+                    "projFantasyPts": p.projFantasyPts,
+                }
+                for p, slot in my_roster["players"]
+            ],
         }
     # Compact separators (no indent/spacing) -- shaves real tokens off a
     # payload that's otherwise identical JSON.
@@ -177,16 +196,21 @@ def evaluate_trade(
     scoring: str,
     api_key: Optional[str] = None,
     trending_ids: Optional[set] = None,
+    my_roster: Optional[dict] = None,
 ) -> dict:
     """Calls the OpenAI Responses API to adjust projections for the *new*
     players and render a trade verdict over the combined (new + cached
     context) totals. Retries once if the model's response isn't parseable
     JSON. `team_a_new`/`team_b_new` are the players needing fresh research;
     `team_a_context`/`team_b_context` are already-adjusted cache hits
-    provided as read-only context.
+    provided as read-only context. `my_roster` ({"side": "A"|"B",
+    "players": [(PlayerData, slot), ...]}) adds a verdict for the user's own
+    roster as `rosterFit`.
     """
     resolved_key = resolve_api_key(api_key)
-    user_prompt = _build_user_prompt(team_a_new, team_b_new, team_a_context, team_b_context, scoring)
+    user_prompt = _build_user_prompt(
+        team_a_new, team_b_new, team_a_context, team_b_context, scoring, my_roster
+    )
     use_web_search = needs_web_search(team_a_new + team_b_new, trending_ids or set())
 
     last_error = None
@@ -199,6 +223,7 @@ def evaluate_trade(
         try:
             parsed = json.loads(cleaned)
             _validate_schema(parsed)
+            parsed["rosterFit"] = _normalize_roster_fit(parsed.get("rosterFit")) if my_roster else None
             return parsed
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
@@ -235,3 +260,25 @@ def _validate_schema(parsed: dict) -> None:
         raise ValueError("fairnessScore must be a number")
     if parsed["fairnessGrade"] not in VALID_FAIRNESS_GRADES:
         raise ValueError(f"Invalid fairnessGrade value: {parsed['fairnessGrade']}")
+    # Explanatory extras -- normalized rather than required, so a model that
+    # omits them doesn't trigger a paid retry over prose alone.
+    breakdown = parsed.get("decisionBreakdown")
+    if not isinstance(breakdown, list):
+        breakdown = []
+    parsed["decisionBreakdown"] = [b for b in breakdown if isinstance(b, str) and b.strip()]
+
+
+VALID_RECOMMENDATIONS = {"accept", "decline", "consider"}
+
+
+def _normalize_roster_fit(raw) -> Optional[dict]:
+    """Like decisionBreakdown, rosterFit is advisory prose -- malformed output
+    degrades to None instead of costing a retry."""
+    if not isinstance(raw, dict) or raw.get("recommendation") not in VALID_RECOMMENDATIONS:
+        return None
+    reasons = raw.get("reasons")
+    return {
+        "recommendation": raw["recommendation"],
+        "summary": raw.get("summary") if isinstance(raw.get("summary"), str) else "",
+        "reasons": [r for r in reasons if isinstance(r, str) and r.strip()] if isinstance(reasons, list) else [],
+    }

@@ -1,5 +1,6 @@
 import logging
 from datetime import date
+from typing import Optional
 
 from flask import Blueprint, jsonify, request
 
@@ -9,6 +10,7 @@ from app.data.types import PlayerData
 from app.limiter import limiter
 from app.llm.cache import get_current_nfl_week, make_cache_key
 from app.llm.evaluator import evaluate_trade, resolve_api_key
+from app.llm.roster import MAX_ROSTER_ENTRIES, VALID_SLOTS, extract_roster, prepare_image
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ VALID_INJURY_STATUSES = {
 MAX_NAME_LENGTH = 60
 MAX_TEAM_LENGTH = 5
 MAX_PLAYERS_PER_SIDE = 10
+ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 
 @bp.get("/health")
@@ -69,6 +72,145 @@ def search_players():
         return jsonify({"error": "Failed to search players"}), 500
 
     return jsonify({"players": [p.to_dict() for p in players]})
+
+
+def _quota_exceeded_response(user_api_key, client_ip: str, today: date):
+    """Daily free-tier quota -- only enforced when using the server's key.
+    BYOK requests are the user's own cost and skip this entirely. Returns a
+    429 response when over quota, else None."""
+    if user_api_key is not None:
+        return None
+    try:
+        used = db.get_quota_count(client_ip, today)
+    except Exception:
+        logger.exception("Quota lookup failed; failing open for this request")
+        used = 0
+    if used >= config.FREE_EVALS_PER_USER_PER_DAY:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Daily free evaluation limit ({config.FREE_EVALS_PER_USER_PER_DAY}) reached. "
+                        "Try again tomorrow, or provide your own OpenAI API key."
+                    )
+                }
+            ),
+            429,
+        )
+    return None
+
+
+def _increment_quota(user_api_key, client_ip: str, today: date) -> None:
+    if user_api_key is not None:
+        return
+    try:
+        db.increment_quota(client_ip, today)
+    except Exception:
+        logger.exception("Quota increment failed (non-fatal)")
+
+
+def _clean_api_key(value) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+@bp.post("/roster/parse")
+@limiter.limit(config.EVAL_RATE_LIMIT)
+def parse_roster():
+    """Screenshot of the user's fantasy roster -> matched Sleeper players.
+    The vision model only transcribes names; matching to real players (and
+    every stat that later reaches the evaluator) comes from Sleeper."""
+    upload = request.files.get("image")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "Attach a screenshot as the 'image' field"}), 400
+    if upload.mimetype not in ALLOWED_IMAGE_TYPES:
+        return jsonify({"error": "Screenshot must be a PNG, JPEG, or WebP image"}), 400
+
+    scoring = request.form.get("scoring", config.DEFAULT_SCORING)
+    if scoring not in VALID_SCORING:
+        scoring = config.DEFAULT_SCORING
+    user_api_key = _clean_api_key(request.form.get("apiKey"))
+
+    try:
+        image_bytes, mime = prepare_image(upload.read())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    client_ip = request.remote_addr or "unknown"
+    today = date.today()
+    over_quota = _quota_exceeded_response(user_api_key, client_ip, today)
+    if over_quota:
+        return over_quota
+
+    try:
+        api_key = resolve_api_key(user_api_key)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    try:
+        entries = extract_roster(image_bytes, mime, api_key)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        logger.exception("Roster extraction failed")
+        return jsonify({"error": f"Roster extraction failed: {exc}"}), 500
+
+    _increment_quota(user_api_key, client_ip, today)
+
+    players, unmatched, seen = [], [], set()
+    for entry in entries:
+        try:
+            match = provider.match_player(entry["name"], entry["position"], entry["team"], scoring=scoring)
+        except Exception:
+            logger.exception("Player match failed for %r", entry["name"])
+            match = None
+        if match is None:
+            unmatched.append(entry["name"])
+        elif match.id not in seen:
+            seen.add(match.id)
+            players.append({**match.to_dict(), "slot": entry["slot"]})
+
+    return jsonify({"players": players, "unmatched": unmatched})
+
+
+def _parse_my_roster(raw, scoring: str, team_a: list[PlayerData], team_b: list[PlayerData]) -> Optional[dict]:
+    """Validates the optional {side, players: [{id, slot}]} roster. Only ids
+    and slots are accepted from the client -- every name/stat sent to the
+    model is re-derived from Sleeper here."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("'myRoster' must be an object")
+    side = raw.get("side")
+    if side not in ("A", "B"):
+        raise ValueError("'myRoster.side' must be 'A' or 'B'")
+    entries = raw.get("players")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("'myRoster.players' must be a non-empty list")
+    if len(entries) > MAX_ROSTER_ENTRIES:
+        raise ValueError(f"'myRoster' cannot have more than {MAX_ROSTER_ENTRIES} players")
+
+    slots: dict[str, str] = {}
+    for item in entries:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or len(item["id"]) > 20:
+            raise ValueError("'myRoster.players' entries need a string 'id'")
+        slot = item.get("slot")
+        slots[item["id"]] = slot if slot in VALID_SLOTS else "bench"
+
+    players = provider.get_players_by_ids(list(slots), scoring=scoring)
+    if not players:
+        raise ValueError("None of the 'myRoster' players were recognized")
+
+    # The players this side gives up are on its roster by definition --
+    # make sure the model sees them even if the screenshot missed one.
+    roster_ids = {p.id for p in players}
+    for given in team_a if side == "A" else team_b:
+        if given.id not in roster_ids:
+            players.append(given)
+            slots[given.id] = "bench"
+
+    return {"side": side, "players": [(p, slots[p.id]) for p in players]}
 
 
 def _compute_value_gap(team_a: list[PlayerData], team_b: list[PlayerData], players: list) -> dict:
@@ -233,6 +375,7 @@ def _merge_players(
                     "adjFantasyPts": c.get("adjFantasyPts", player.projFantasyPts),
                     "adjustmentReason": c.get("adjustmentReason", ""),
                     "riskFlags": c.get("riskFlags", []),
+                    "outlook": c.get("outlook", ""),
                 }
             )
         elif key in new_by_name:
@@ -247,6 +390,7 @@ def _merge_players(
                     "adjFantasyPts": player.projFantasyPts,
                     "adjustmentReason": "No adjustment available.",
                     "riskFlags": [],
+                    "outlook": "",
                 }
             )
     return merged
@@ -272,6 +416,7 @@ def _store_new_projections(new_players: list[PlayerData], new_entries: list, wee
                 "adjFantasyPts": entry.get("adjFantasyPts", player.projFantasyPts),
                 "adjustmentReason": entry.get("adjustmentReason", ""),
                 "riskFlags": entry.get("riskFlags", []),
+                "outlook": entry.get("outlook", ""),
             },
         )
 
@@ -293,12 +438,15 @@ def evaluate():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    user_api_key = body.get("apiKey")
-    if not isinstance(user_api_key, str) or not user_api_key.strip():
-        user_api_key = None
+    user_api_key = _clean_api_key(body.get("apiKey"))
+
+    try:
+        my_roster = _parse_my_roster(body.get("myRoster"), scoring, team_a, team_b)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     week = get_current_nfl_week()
-    cache_key = make_cache_key([p.name for p in team_a], [p.name for p in team_b], scoring, week)
+    cache_key = make_cache_key([p.name for p in team_a], [p.name for p in team_b], scoring, week, my_roster)
 
     # 1. Global verdict cache -- shared across all users, checked before
     # anything else. A hit costs nothing and doesn't touch quota.
@@ -311,28 +459,12 @@ def evaluate():
     if cached_verdict is not None:
         return jsonify({**cached_verdict, "cached": True})
 
-    # 2. Daily free-tier quota -- only enforced when using the server's key.
-    # BYOK requests are the user's own cost and skip this entirely.
+    # 2. Daily free-tier quota (server key only).
     client_ip = request.remote_addr or "unknown"
     today = date.today()
-    if user_api_key is None:
-        try:
-            used = db.get_quota_count(client_ip, today)
-        except Exception:
-            logger.exception("Quota lookup failed; failing open for this request")
-            used = 0
-        if used >= config.FREE_EVALS_PER_USER_PER_DAY:
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            f"Daily free evaluation limit ({config.FREE_EVALS_PER_USER_PER_DAY}) reached. "
-                            "Try again tomorrow, or provide your own OpenAI API key."
-                        )
-                    }
-                ),
-                429,
-            )
+    over_quota = _quota_exceeded_response(user_api_key, client_ip, today)
+    if over_quota:
+        return over_quota
 
     try:
         resolve_api_key(user_api_key)
@@ -359,6 +491,7 @@ def evaluate():
             scoring,
             api_key=user_api_key,
             trending_ids=trending_ids,
+            my_roster=my_roster,
         )
     except ValueError as exc:
         logger.error("LLM parse failure: %s", exc)
@@ -367,11 +500,7 @@ def evaluate():
         logger.exception("LLM evaluation failed")
         return jsonify({"error": f"Trade evaluation failed: {exc}"}), 500
 
-    if user_api_key is None:
-        try:
-            db.increment_quota(client_ip, today)
-        except Exception:
-            logger.exception("Quota increment failed (non-fatal)")
+    _increment_quota(user_api_key, client_ip, today)
 
     try:
         _store_new_projections(team_a_new + team_b_new, result.get("players", []), week, scoring)

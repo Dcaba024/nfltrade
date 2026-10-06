@@ -136,6 +136,19 @@ bring the leaderboards back.
    roster-size cap) so a client can never smuggle an arbitrary free-text
    prompt through to the model on the server's key.
 
+### Roster screenshots
+
+"Your team" (above the trade builder) accepts a PNG/JPEG/WebP screenshot of
+the user's fantasy roster. `POST /api/roster/parse` downscales it to
+1600px (re-encoded server-side), makes one vision call that only
+transcribes names/slots, then matches each name to a Sleeper player —
+unmatched names are returned for the user to add by search. Each parse
+counts against the same daily quota as an evaluation. On `/api/evaluate`,
+the roster is sent as Sleeper ids + slots only and every stat is
+re-derived server-side; the response then includes a `rosterFit`
+accept/consider/decline verdict for that roster, and the roster is part of
+the verdict cache key.
+
 There's no login system yet, so "per-user" above means per-IP — noted as a
 known limitation, not a real identity system.
 

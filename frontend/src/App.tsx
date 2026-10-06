@@ -1,9 +1,32 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TeamColumn } from "./components/TeamColumn";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { Leaderboard } from "./components/Leaderboard";
+import { MyTeamPanel } from "./components/MyTeamPanel";
 import { evaluateTrade } from "./lib/api";
-import type { EvaluateResponse, PlayerData, Scoring } from "./types";
+import type { EvaluateResponse, PlayerData, RosterPlayer, Scoring } from "./types";
+
+const ROSTER_STORAGE_KEY = "myRoster";
+
+// Saved roster is a per-browser convenience so it survives reloads; storage
+// can be unavailable (private mode, blocked site data), so fail quietly.
+function loadSavedRoster(): RosterPlayer[] {
+  try {
+    const raw = localStorage.getItem(ROSTER_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function inferSide(roster: RosterPlayer[], teamA: PlayerData[], teamB: PlayerData[]): "A" | "B" | null {
+  const ids = new Set(roster.map((p) => p.id));
+  const givesA = teamA.some((p) => ids.has(p.id));
+  const givesB = teamB.some((p) => ids.has(p.id));
+  if (givesA === givesB) return null;
+  return givesA ? "A" : "B";
+}
 
 function addPlayer(list: PlayerData[], player: PlayerData): PlayerData[] {
   if (list.some((p) => p.id === player.id)) return list;
@@ -18,6 +41,18 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EvaluateResponse | null>(null);
   const builderHeadingRef = useRef<HTMLHeadingElement>(null);
+  const [myRoster, setMyRoster] = useState<RosterPlayer[]>(loadSavedRoster);
+  const [chosenSide, setChosenSide] = useState<"A" | "B" | null>(null);
+  const inferredSide = inferSide(myRoster, teamA, teamB);
+  const mySide = chosenSide ?? inferredSide ?? "A";
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(myRoster));
+    } catch {
+      // Not persisting is fine -- the roster still works for this session.
+    }
+  }, [myRoster]);
 
   const canEvaluate = teamA.length > 0 && teamB.length > 0 && !loading;
 
@@ -26,7 +61,12 @@ function App() {
     setError(null);
     setResult(null);
     try {
-      const response = await evaluateTrade(teamA, teamB, scoring);
+      const response = await evaluateTrade(
+        teamA,
+        teamB,
+        scoring,
+        myRoster.length > 0 ? { side: mySide, players: myRoster } : null
+      );
       setResult(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -39,6 +79,8 @@ function App() {
     setResult(null);
     setTeamA([]);
     setTeamB([]);
+    // Keep the roster, but re-detect which side it's on for the next trade.
+    setChosenSide(null);
     // Leaderboards are about to replace the verdict -- return focus to a
     // sensible spot in the trade builder rather than leaving it stranded.
     builderHeadingRef.current?.focus();
@@ -74,6 +116,15 @@ function App() {
           <h2 ref={builderHeadingRef} tabIndex={-1} className="sr-only">
             Build your trade
           </h2>
+
+          <MyTeamPanel
+            roster={myRoster}
+            onRosterChange={setMyRoster}
+            side={mySide}
+            sideInferred={chosenSide === null && inferredSide !== null}
+            onSideChange={setChosenSide}
+            scoring={scoring}
+          />
 
           <div className="flex flex-col gap-4 md:flex-row">
             <TeamColumn

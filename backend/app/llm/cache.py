@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import time
+from typing import Optional
 
 import requests
 
@@ -36,11 +37,19 @@ def get_current_nfl_week() -> int:
         return config.CURRENT_WEEK
 
 
-def make_cache_key(team_a_names: list[str], team_b_names: list[str], scoring: str, week: int) -> str:
+def make_cache_key(
+    team_a_names: list[str],
+    team_b_names: list[str],
+    scoring: str,
+    week: int,
+    roster: Optional[dict] = None,
+) -> str:
     """Order-independent key: two trades with the same players on each side
     (regardless of the order they were added) and the same scoring/week hash
     to the same key. Shared across all users -- this is a global cache, not
-    per-session.
+    per-session. A trade judged against a user's roster carries a
+    roster-specific rosterFit, so the roster (side + player ids/slots) is
+    part of the key when present.
     """
     payload = {
         "teamA": sorted(name.strip().lower() for name in team_a_names),
@@ -48,5 +57,7 @@ def make_cache_key(team_a_names: list[str], team_b_names: list[str], scoring: st
         "scoring": scoring,
         "week": week,
     }
+    if roster:
+        payload["roster"] = {"side": roster["side"], "players": sorted(f"{p.id}:{slot}" for p, slot in roster["players"])}
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
