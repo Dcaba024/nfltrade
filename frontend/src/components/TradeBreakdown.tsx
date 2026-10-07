@@ -2,6 +2,7 @@ import type { EvaluateResponse, PlayerData, PlayerEvaluation, RosterFit } from "
 import { tradeCall } from "../lib/fairness";
 import { PlayerHeadshot } from "./PlayerHeadshot";
 import { PositionBadge } from "./PositionBadge";
+import { ByeTag } from "./PlayerChip";
 
 interface TradeBreakdownProps {
   result: EvaluateResponse;
@@ -38,9 +39,10 @@ function ReceivesGroup({
               <div className="flex items-center gap-1.5">
                 <PositionBadge position={player.position} />
                 <p className="truncate text-sm font-medium text-text">{player.name}</p>
+                {player.onBye && <ByeTag />}
                 {evaluation && (
                   <span className="ml-auto shrink-0 text-xs text-text-dim">
-                    {evaluation.adjFantasyPts.toFixed(1)} pts
+                    {evaluation.adjFantasyPts.toFixed(1)} pts/g
                   </span>
                 )}
               </div>

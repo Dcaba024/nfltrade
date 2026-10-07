@@ -37,6 +37,17 @@ def get_current_nfl_week() -> int:
         return config.CURRENT_WEEK
 
 
+# What adjFantasyPts measures. Bumped from the original this-week-only basis
+# to rest-of-season points per game; part of every cache key so cached
+# numbers from an older basis are never mixed into a newer evaluation.
+VALUE_BASIS = "ros-v1"
+
+
+def projection_cache_scope(scoring: str) -> str:
+    """Scoring column value for the per-player projection cache."""
+    return f"{scoring}:{VALUE_BASIS}"
+
+
 def make_cache_key(
     team_a_names: list[str],
     team_b_names: list[str],
@@ -56,6 +67,7 @@ def make_cache_key(
         "teamB": sorted(name.strip().lower() for name in team_b_names),
         "scoring": scoring,
         "week": week,
+        "basis": VALUE_BASIS,
     }
     if roster:
         payload["roster"] = {"side": roster["side"], "players": sorted(f"{p.id}:{slot}" for p, slot in roster["players"])}

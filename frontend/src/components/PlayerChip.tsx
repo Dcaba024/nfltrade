@@ -7,6 +7,18 @@ interface PlayerChipProps {
   onRemove: () => void;
 }
 
+/** On bye this week -- informational only; trade value is season-long. */
+export function ByeTag() {
+  return (
+    <span
+      className="rounded border border-neon-purple px-1 text-[10px] font-bold uppercase leading-4 text-neon-purple"
+      title="On bye this week — doesn't count against trade value"
+    >
+      Bye
+    </span>
+  );
+}
+
 export function PlayerChip({ player, onRemove }: PlayerChipProps) {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 py-1.5 pl-1.5 pr-1.5">
@@ -15,7 +27,8 @@ export function PlayerChip({ player, onRemove }: PlayerChipProps) {
         <span className="truncate text-sm font-medium text-text">{player.name}</span>
         <span className="flex items-center gap-1.5 text-xs text-text-dim">
           <PositionBadge position={player.position} />
-          {player.team ?? "FA"} · {player.projFantasyPts.toFixed(1)} pts
+          {player.team ?? "FA"} · {(player.rosPtsPerGame ?? player.projFantasyPts).toFixed(1)} pts/g
+          {player.onBye && <ByeTag />}
         </span>
       </div>
       <button

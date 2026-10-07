@@ -8,7 +8,7 @@ from app import config, db
 from app.data.sleeper import provider
 from app.data.types import PlayerData
 from app.limiter import limiter
-from app.llm.cache import get_current_nfl_week, make_cache_key
+from app.llm.cache import get_current_nfl_week, make_cache_key, projection_cache_scope
 from app.llm.evaluator import evaluate_trade, resolve_api_key
 from app.llm.roster import MAX_ROSTER_ENTRIES, VALID_SLOTS, extract_roster, prepare_image
 
@@ -330,6 +330,18 @@ def _parse_player_list(raw_list, field_name: str) -> list[PlayerData]:
     return players
 
 
+def _refresh_from_provider(players: list[PlayerData], scoring: str) -> list[PlayerData]:
+    """Re-derives each player's projections (incl. the rest-of-season view)
+    from Sleeper by id instead of trusting the numbers the client sent.
+    Players the provider doesn't know keep the client's data."""
+    try:
+        fresh = {p.id: p for p in provider.get_players_by_ids([p.id for p in players], scoring=scoring)}
+    except Exception:
+        logger.exception("Player refresh failed; using client-sent player data")
+        return players
+    return [fresh.get(p.id, p) for p in players]
+
+
 def _split_cached_players(
     team: list[PlayerData], week: int, scoring: str
 ) -> tuple[list[dict], list[PlayerData]]:
@@ -340,7 +352,7 @@ def _split_cached_players(
     context: list[dict] = []
     new: list[PlayerData] = []
     for player in team:
-        cached = db.get_cached_projection(player.id, week, scoring)
+        cached = db.get_cached_projection(player.id, week, projection_cache_scope(scoring))
         if cached:
             context.append(cached)
         else:
@@ -366,31 +378,35 @@ def _merge_players(
     merged = []
     for player in team_a + team_b:
         key = player.name.strip().lower()
+        bye = {"onBye": player.onBye, "byeWeek": player.byeWeek}
         if key in context_by_name:
             c = context_by_name[key]
             merged.append(
                 {
                     "name": c.get("name", player.name),
-                    "projFantasyPts": c.get("projFantasyPts", player.projFantasyPts),
-                    "adjFantasyPts": c.get("adjFantasyPts", player.projFantasyPts),
+                    "projFantasyPts": c.get("projFantasyPts", player.valuePts),
+                    "adjFantasyPts": c.get("adjFantasyPts", player.valuePts),
                     "adjustmentReason": c.get("adjustmentReason", ""),
                     "riskFlags": c.get("riskFlags", []),
                     "outlook": c.get("outlook", ""),
+                    **bye,
                 }
             )
         elif key in new_by_name:
-            merged.append(new_by_name[key])
+            # Pin the baseline to what we sent rather than the model's echo.
+            merged.append({**new_by_name[key], "projFantasyPts": player.valuePts, **bye})
         else:
             # Defensive fallback: the model dropped this player -- surface
             # the unadjusted baseline rather than silently losing them.
             merged.append(
                 {
                     "name": player.name,
-                    "projFantasyPts": player.projFantasyPts,
-                    "adjFantasyPts": player.projFantasyPts,
+                    "projFantasyPts": player.valuePts,
+                    "adjFantasyPts": player.valuePts,
                     "adjustmentReason": "No adjustment available.",
                     "riskFlags": [],
                     "outlook": "",
+                    **bye,
                 }
             )
     return merged
@@ -407,13 +423,13 @@ def _store_new_projections(new_players: list[PlayerData], new_entries: list, wee
         db.store_projection(
             player.id,
             week,
-            scoring,
+            projection_cache_scope(scoring),
             {
                 "name": entry.get("name", player.name),
                 "team": player.team,
                 "position": player.position,
-                "projFantasyPts": entry.get("projFantasyPts", player.projFantasyPts),
-                "adjFantasyPts": entry.get("adjFantasyPts", player.projFantasyPts),
+                "projFantasyPts": player.valuePts,
+                "adjFantasyPts": entry.get("adjFantasyPts", player.valuePts),
                 "adjustmentReason": entry.get("adjustmentReason", ""),
                 "riskFlags": entry.get("riskFlags", []),
                 "outlook": entry.get("outlook", ""),
@@ -437,6 +453,8 @@ def evaluate():
         team_b = _parse_player_list(body.get("teamB"), "teamB")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    team_a = _refresh_from_provider(team_a, scoring)
+    team_b = _refresh_from_provider(team_b, scoring)
 
     user_api_key = _clean_api_key(body.get("apiKey"))
 

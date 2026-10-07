@@ -16,7 +16,7 @@ export function FairnessMeter({ valueGap, fairnessScore, fairnessGrade, fairness
   const color = fairnessColor(fairnessScore);
   const glow = fairnessGlow(fairnessScore);
 
-  const summary = `Fairness ${Math.round(fairnessScore)} of 100, ${fairnessGrade}. Team A receives ${teamAReceives.toFixed(1)} points, Team B receives ${teamBReceives.toFixed(1)} points.`;
+  const summary = `Fairness ${Math.round(fairnessScore)} of 100, ${fairnessGrade}. Team A receives ${teamAReceives.toFixed(1)} points per game, Team B receives ${teamBReceives.toFixed(1)} points per game, rest of season.`;
 
   return (
     <div className="rounded-xl border border-border bg-surface p-4">
@@ -28,11 +28,11 @@ export function FairnessMeter({ valueGap, fairnessScore, fairnessGrade, fairness
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <div className="text-left">
           <p className="text-xs uppercase tracking-wide text-text-dim">Team A gets</p>
-          <p className="text-sm font-semibold text-text">{teamAReceives.toFixed(1)} pts</p>
+          <p className="text-sm font-semibold text-text">{teamAReceives.toFixed(1)} pts/g</p>
         </div>
         <div className="text-right">
           <p className="text-xs uppercase tracking-wide text-text-dim">Team B gets</p>
-          <p className="text-sm font-semibold text-text">{teamBReceives.toFixed(1)} pts</p>
+          <p className="text-sm font-semibold text-text">{teamBReceives.toFixed(1)} pts/g</p>
         </div>
       </div>
 
@@ -54,6 +54,7 @@ export function FairnessMeter({ valueGap, fairnessScore, fairnessGrade, fairness
       <p className="mt-3 text-xs text-text-dim">{fairnessRationale}</p>
 
       <p className="mt-2 text-[11px] leading-snug text-text-dim">
+        Points are rest-of-season projections per game, so a bye this week doesn't count against a player.{" "}
         Winner shows WHO is favored. Fairness shows BY HOW MUCH — high fairness means it's close and
         either side is fine to accept; low fairness means one side is getting fleeced and being the
         winner is the one to be.

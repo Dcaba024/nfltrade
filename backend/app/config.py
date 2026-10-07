@@ -31,6 +31,12 @@ PLAYERS_CACHE_META_FILE = os.path.join(CACHE_DIR, "players_meta.json")
 PLAYERS_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60  # fetch player metadata at most once/day
 
 PROJECTIONS_CACHE_MAX_AGE_SECONDS = 60 * 60  # projections refresh hourly
+# Future weeks' projections barely move day to day -- refresh them less often
+# so building the rest-of-season outlook doesn't refetch ~13 weeks hourly.
+FUTURE_PROJECTIONS_CACHE_MAX_AGE_SECONDS = 12 * 60 * 60
+# Last week counted toward a player's rest-of-season value (fantasy playoffs
+# typically end week 17).
+FANTASY_FINAL_WEEK = int(os.environ.get("FANTASY_FINAL_WEEK", "17"))
 
 SEASON_STATS_CACHE_MAX_AGE_SECONDS = 60 * 60  # season stats (leaderboard source) refresh hourly
 LEADERBOARD_CACHE_MAX_AGE_SECONDS = 60 * 60  # computed leaderboard, refreshed hourly

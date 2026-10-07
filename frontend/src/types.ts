@@ -11,6 +11,11 @@ export interface PlayerData {
   projYards: number;
   projTDs: number;
   imageUrl: string;
+  /** Projected points per game over the rest of the season, bye excluded. */
+  rosPtsPerGame?: number | null;
+  /** Upcoming bye week, if still ahead this season. */
+  byeWeek?: number | null;
+  onBye?: boolean;
 }
 
 export interface PlayerEvaluation {
@@ -19,6 +24,8 @@ export interface PlayerEvaluation {
   adjFantasyPts: number;
   adjustmentReason: string;
   riskFlags: string[];
+  onBye?: boolean;
+  byeWeek?: number | null;
   /** What the player brings to a roster. Missing on verdicts cached before this field existed. */
   outlook?: string;
 }

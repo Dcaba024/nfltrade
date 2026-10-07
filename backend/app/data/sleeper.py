@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import requests
@@ -47,6 +48,7 @@ class SleeperProvider:
         self._season_stats_cache: dict[int, dict] = {}
         self._leaderboard_cache: dict[tuple, tuple[float, dict]] = {}
         self._trending_cache: tuple[float, set] = (0.0, set())
+        self._outlook_cache: dict[tuple, tuple[float, list]] = {}
 
     # -- players -----------------------------------------------------------
 
@@ -88,12 +90,6 @@ class SleeperProvider:
     def _projections_cache_file(self, season: int, week: int) -> str:
         return os.path.join(config.CACHE_DIR, f"projections_{season}_wk{week}.json")
 
-    def _projections_cache_is_fresh(self, path: str) -> bool:
-        if not os.path.exists(path):
-            return False
-        age = time.time() - os.path.getmtime(path)
-        return age < config.PROJECTIONS_CACHE_MAX_AGE_SECONDS
-
     def _fetch_projections_from_api(self, season: int, week: int) -> list:
         logger.info("Fetching Sleeper projections for season=%s week=%s", season, week)
         url = f"{config.SLEEPER_PROJECTIONS_BASE_URL}/{season}/{week}"
@@ -105,27 +101,28 @@ class SleeperProvider:
             json.dump(data, f)
         return data
 
+    def _read_projections_week(self, season: int, week: int, max_age: int) -> list:
+        """Raw projection entries for one week, via the on-disk cache."""
+        path = self._projections_cache_file(season, week)
+        if os.path.exists(path) and time.time() - os.path.getmtime(path) < max_age:
+            with open(path, "r") as f:
+                return json.load(f)
+        try:
+            return self._fetch_projections_from_api(season, week)
+        except requests.RequestException:
+            logger.exception("Failed to fetch Sleeper projections; falling back to stale cache if present")
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    return json.load(f)
+            return []
+
     def _load_projections(self, season: int, week: int) -> dict:
         """Returns a dict keyed by player_id -> projection entry."""
         cache_key = f"{season}_{week}"
         if cache_key in self._projections_cache:
             return self._projections_cache[cache_key]
 
-        path = self._projections_cache_file(season, week)
-        raw = None
-        if self._projections_cache_is_fresh(path):
-            with open(path, "r") as f:
-                raw = json.load(f)
-        else:
-            try:
-                raw = self._fetch_projections_from_api(season, week)
-            except requests.RequestException:
-                logger.exception("Failed to fetch Sleeper projections; falling back to stale cache if present")
-                if os.path.exists(path):
-                    with open(path, "r") as f:
-                        raw = json.load(f)
-                else:
-                    raw = []
+        raw = self._read_projections_week(season, week, config.PROJECTIONS_CACHE_MAX_AGE_SECONDS)
 
         by_id = {}
         for entry in raw or []:
@@ -134,6 +131,71 @@ class SleeperProvider:
                 by_id[str(player_id)] = entry
         self._projections_cache[cache_key] = by_id
         return by_id
+
+    # -- rest-of-season outlook --------------------------------------------
+
+    def _load_season_outlook(self, season: int, from_week: int) -> list[tuple[int, set, dict]]:
+        """For each week from `from_week` through FANTASY_FINAL_WEEK: the NFL
+        teams with a game that week, and a compact {player_id: stats} of
+        fantasy-scoring stats. A team missing from a week's schedule is on
+        bye. Kept in memory for an hour; only the compact form is held, not
+        the full ~9k-entry weekly payloads.
+        """
+        key = (season, from_week)
+        now = time.time()
+        cached = self._outlook_cache.get(key)
+        if cached and now - cached[0] < config.PROJECTIONS_CACHE_MAX_AGE_SECONDS:
+            return cached[1]
+
+        weeks = list(range(from_week, config.FANTASY_FINAL_WEEK + 1))
+
+        def load(week: int) -> tuple[int, set, dict]:
+            max_age = (
+                config.PROJECTIONS_CACHE_MAX_AGE_SECONDS
+                if week == from_week
+                else config.FUTURE_PROJECTIONS_CACHE_MAX_AGE_SECONDS
+            )
+            raw = self._read_projections_week(season, week, max_age)
+            teams = set()
+            stats_by_id = {}
+            for entry in raw or []:
+                if entry.get("opponent") and entry.get("team"):
+                    teams.add(entry["team"])
+                stats = entry.get("stats") or {}
+                if entry.get("player_id") is not None and stats.get("pts_ppr"):
+                    stats_by_id[str(entry["player_id"])] = {k: stats.get(k) for k in SCORING_STAT_KEY.values()}
+            return week, teams, stats_by_id
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            # A week with no scheduled teams means no data yet, not a
+            # league-wide bye -- drop it rather than mark everyone on bye.
+            outlook = [w for w in pool.map(load, weeks) if w[1]]
+        self._outlook_cache[key] = (now, outlook)
+        return outlook
+
+    def _season_view(
+        self, player_id: str, team: Optional[str], scoring: str, season: int, week: int
+    ) -> tuple[Optional[float], Optional[int], bool]:
+        """(rest-of-season points per game, upcoming bye week, on bye now)."""
+        if not team:
+            return None, None, False
+        try:
+            outlook = self._load_season_outlook(season, week)
+        except Exception:
+            logger.exception("Season outlook unavailable; falling back to weekly projections")
+            return None, None, False
+
+        stat_key = SCORING_STAT_KEY.get(scoring, SCORING_STAT_KEY["ppr"])
+        games = []
+        bye_week = None
+        for wk, teams, stats_by_id in outlook:
+            if team not in teams:
+                bye_week = bye_week or wk
+                continue
+            stats = stats_by_id.get(player_id, {})
+            games.append(stats.get(stat_key) or stats.get("pts_ppr") or 0)
+        ros = round(sum(games) / len(games), 2) if games else None
+        return ros, bye_week, bye_week == week
 
     # -- image resolution ------------------------------------------------
 
@@ -155,7 +217,13 @@ class SleeperProvider:
         return f"{first} {last}".strip() or meta.get("full_name", "") or player_id
 
     def _build_player_data(
-        self, player_id: str, meta: dict, projections_by_id: dict, scoring: str
+        self,
+        player_id: str,
+        meta: dict,
+        projections_by_id: dict,
+        scoring: str,
+        season: Optional[int] = None,
+        week: Optional[int] = None,
     ) -> PlayerData:
         position = meta.get("position") or (meta.get("fantasy_positions") or [None])[0] or ""
         team = meta.get("team")
@@ -181,6 +249,9 @@ class SleeperProvider:
         )
 
         opponent = projection.get("opponent")
+        ros, bye_week, on_bye = self._season_view(
+            player_id, team, scoring, season or config.CURRENT_SEASON, week or config.CURRENT_WEEK
+        )
 
         return PlayerData(
             id=player_id,
@@ -193,6 +264,9 @@ class SleeperProvider:
             projYards=round(float(proj_yards), 1),
             projTDs=round(float(proj_tds), 2),
             imageUrl=self._image_url(player_id, position, team),
+            rosPtsPerGame=ros,
+            byeWeek=bye_week,
+            onBye=on_bye,
         )
 
     def search_players(
@@ -240,7 +314,7 @@ class SleeperProvider:
         matches = matches[:limit]
 
         return [
-            self._build_player_data(player_id, meta, projections_by_id, scoring)
+            self._build_player_data(player_id, meta, projections_by_id, scoring, season, week)
             for player_id, meta in matches
         ]
 
@@ -262,7 +336,7 @@ class SleeperProvider:
             meta = players.get(player_id)
             if not meta:
                 continue
-            results.append(self._build_player_data(player_id, meta, projections_by_id, scoring))
+            results.append(self._build_player_data(player_id, meta, projections_by_id, scoring, season, week))
         return results
 
     def match_player(
@@ -339,7 +413,7 @@ class SleeperProvider:
             return (0 if meta.get("team") else 1, -pts)
 
         player_id, meta = min(candidates, key=rank)
-        return self._build_player_data(player_id, meta, projections_by_id, scoring)
+        return self._build_player_data(player_id, meta, projections_by_id, scoring, season, week)
 
     # -- season stats / leaderboard -----------------------------------------
 

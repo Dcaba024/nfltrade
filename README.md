@@ -94,6 +94,7 @@ bring the leaderboards back.
 | `OPENAI_MAX_TOOL_CALLS` | `backend/.env` | Optional. Caps web-search calls per evaluation; defaults to `1`.     |
 | `FREE_EVALS_PER_USER_PER_DAY` | `backend/.env` | Optional. Daily quota per IP on the server key; defaults to `25`. |
 | `EVAL_RATE_LIMIT`  | `backend/.env`   | Optional. Per-IP burst limit on `/api/evaluate`; defaults to `10 per minute`. |
+| `FANTASY_FINAL_WEEK` | `backend/.env` | Optional. Last week counted toward rest-of-season value; defaults to `17`. |
 | `NFL_SEASON`       | `backend/.env`   | Optional override if the auto-detected season is wrong.                 |
 | `NFL_WEEK`         | `backend/.env`   | Optional override if the auto-detected week is wrong.                   |
 | `VITE_API_BASE_URL`| `frontend/.env`  | Optional. Defaults to `http://localhost:5001`.                          |
@@ -135,6 +136,17 @@ bring the leaderboards back.
    validation (bounded name/team length, a fixed `injuryStatus` whitelist, a
    roster-size cap) so a client can never smuggle an arbitrary free-text
    prompt through to the model on the server's key.
+
+### Season-long valuation
+
+Trades are judged on each player's **rest-of-season projected points per
+game** (this week through `FANTASY_FINAL_WEEK`, bye excluded), built from
+Sleeper's weekly projections — not on this week alone. A player on bye this
+week keeps full value (the UI just tags them "Bye"); bye weeks only enter the
+verdict as a minor roster-construction note. Player numbers are re-derived
+server-side by Sleeper id on every evaluation, and the cache keys carry a
+`VALUE_BASIS` version (`app/llm/cache.py`) so values cached under an older
+basis are never reused.
 
 ### Roster screenshots
 

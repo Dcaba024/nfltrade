@@ -40,23 +40,24 @@ def resolve_api_key(user_api_key: Optional[str] = None) -> str:
 # rationale. Kept byte-identical across calls (nothing per-request is
 # interpolated into this string) so it sits as a stable prefix for OpenAI's
 # automatic prompt caching.
-SYSTEM_PROMPT = """Fantasy football trade analyst. projFantasyPts/projYards/projTDs are ground-truth baselines from a stats provider -- never invented.
+SYSTEM_PROMPT = """Fantasy football trade analyst. The goal is winning the league, not this week: judge season-long value. projFantasyPts is the player's projected points PER GAME over the rest of the fantasy season (bye excluded); thisWeekPts/projYards/projTDs are this week only. All are ground-truth baselines from a stats provider -- never invented.
 
 Input has teamA_receives and teamB_receives: the players each side RECEIVES in this trade, already assigned to the receiving side (do not swap them -- teamA_receives belongs to Team A's total, not Team B's). Each has two buckets:
 - toEvaluate: research (web search) and adjust these.
 - alreadyEvaluated: adjFantasyPts is FINAL from a prior evaluation this week. Do not change it or re-explain it. Use it only for totals.
 
 Rules:
-- adjFantasyPts = projFantasyPts + a reasoned delta from real, cited news/injury/matchup/usage. No relevant news -> keep near baseline, say so.
+- adjFantasyPts = projFantasyPts + a reasoned delta from real, cited news/injury/role/usage that changes REST-OF-SEASON per-game value (a one-week matchup barely matters). No relevant news -> keep near baseline, say so.
+- Byes: onByeThisWeek=true costs the player NOTHING in this trade -- never treat it as a zero week, a downgrade, or a risk flag. byeWeek is at most a minor roster-construction note (e.g. stacking byes with myRoster starters).
 - Never fabricate injuries/news. Uncertain -> small or zero adjustment.
 - Web search AT MOST ONCE total (one query covering every toEvaluate player), then stop and reason from what you found.
 - Sum each side's own receives-total: toEvaluate + alreadyEvaluated adjFantasyPts within teamA_receives = Team A's total; same for teamB_receives = Team B's total. winner = whichever total is higher; "even" only if the two totals are within ~1% of each other.
-- fairnessScore (0-100, 100=perfectly even) starts from the raw % gap between the two receives-totals, then adjust for positional scarcity, consolidation (N-for-1 favors the side getting the single best player), injury risk, and bye-week conflicts. If it diverges from the raw gap, say why in fairnessRationale.
+- fairnessScore (0-100, 100=perfectly even) starts from the raw % gap between the two receives-totals, then adjust for positional scarcity, consolidation (N-for-1 favors the side getting the single best player), and injury risk. If it diverges from the raw gap, say why in fairnessRationale.
 - Grade: 90-100 Even, 75-89 Fair, 55-74 Slight Edge, 30-54 Lopsided, 0-29 Unfair.
 - rationale, adjustmentReason, fairnessRationale: max 1-2 sentences each.
 - outlook: 1-2 sentences on what the player offers a roster -- role, usage/volume, ceiling vs floor, and rest-of-season value beyond this week.
 - decisionBreakdown: 2-4 short bullet strings, each one concrete factor that drove the verdict (e.g. best player in the deal, depth vs. consolidation, injury risk, positional need). Cover all players, including alreadyEvaluated.
-- myRoster (optional): the user's full current roster and which side (A|B) of the trade is theirs. If present, judge the trade for THAT roster after the swap -- positional depth/holes, starting-lineup upgrade vs. bench filler, bye-week stacking, redundancy. A trade can lose on raw points yet help the roster (fills a hole), or win on points yet hurt it (they give up a needed starter). rosterFit.recommendation: "accept" | "decline" | "consider"; summary 1-2 sentences addressed to the user ("you"); reasons 2-3 short strings. No myRoster -> "rosterFit": null.
+- myRoster (optional): the user's full current roster and which side (A|B) of the trade is theirs. If present, judge the trade for THAT roster after the swap -- positional depth/holes, starting-lineup upgrade vs. bench filler, redundancy, and (minor) bye-week stacking. A trade can lose on raw points yet help the roster (fills a hole), or win on points yet hurt it (they give up a needed starter). rosterFit.recommendation: "accept" | "decline" | "consider"; summary 1-2 sentences addressed to the user ("you"); reasons 2-3 short strings. No myRoster -> "rosterFit": null.
 - "players": one entry per toEvaluate player (from either bucket), NONE for alreadyEvaluated players. Empty toEvaluate -> "players": [].
 - Output ONLY this JSON. No markdown fences, no other text.
 
@@ -70,7 +71,10 @@ def _format_new_entry(player: PlayerData) -> dict:
         "position": player.position,
         "opponent": player.opponent,
         "injuryStatus": player.injuryStatus,
-        "projFantasyPts": player.projFantasyPts,
+        "projFantasyPts": player.valuePts,
+        "thisWeekPts": player.projFantasyPts,
+        "onByeThisWeek": player.onBye,
+        "byeWeek": player.byeWeek,
         "projYards": player.projYards,
         "projTDs": player.projTDs,
     }
@@ -124,7 +128,8 @@ def _build_user_prompt(
                     "team": p.team,
                     "slot": slot,
                     "injuryStatus": p.injuryStatus,
-                    "projFantasyPts": p.projFantasyPts,
+                    "projFantasyPts": p.valuePts,
+                    "byeWeek": p.byeWeek,
                 }
                 for p, slot in my_roster["players"]
             ],

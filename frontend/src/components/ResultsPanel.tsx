@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { EvaluateResponse, PlayerData } from "../types";
 import { PlayerHeadshot } from "./PlayerHeadshot";
 import { PositionBadge } from "./PositionBadge";
+import { ByeTag } from "./PlayerChip";
 import { FairnessMeter } from "./FairnessMeter";
 import { FairnessGradePill } from "./FairnessGradePill";
 import { TradeBreakdown } from "./TradeBreakdown";
@@ -121,7 +122,7 @@ export function ResultsPanel({ result, teamA, teamB }: ResultsPanelProps) {
           const deltaArrow = delta > 0 ? "▲" : delta < 0 ? "▼" : "▬";
           const deltaDescription =
             delta === 0
-              ? "No change from baseline"
+              ? "No change from rest-of-season baseline"
               : `${delta > 0 ? "Increased" : "Decreased"} by ${Math.abs(delta).toFixed(1)} points from baseline`;
 
           return (
@@ -132,9 +133,10 @@ export function ResultsPanel({ result, teamA, teamB }: ResultsPanelProps) {
                   <div className="flex items-center gap-1.5">
                     {player && <PositionBadge position={player.position} />}
                     <p className="truncate text-sm font-medium text-text">{p.name}</p>
+                    {p.onBye && <ByeTag />}
                   </div>
                   <p className="text-xs text-text-dim">
-                    {p.projFantasyPts.toFixed(1)} → {p.adjFantasyPts.toFixed(1)} pts{" "}
+                    {p.projFantasyPts.toFixed(1)} → {p.adjFantasyPts.toFixed(1)} pts/g rest of season{" "}
                     <span className={deltaColor} aria-label={deltaDescription}>
                       <span aria-hidden="true">
                         ({deltaArrow} {deltaLabel})
